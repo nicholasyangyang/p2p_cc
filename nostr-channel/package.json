@@ -1,0 +1,13 @@
+{
+  "name": "nostr-channel",
+  "version": "1.0.0",
+  "description": "Nostr MCP Channel for Claude Code",
+  "type": "module",
+  "scripts": {
+    "start": "bun run server.ts",
+    "broker": "bun run broker.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  }
+}
