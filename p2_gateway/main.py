@@ -489,8 +489,13 @@ async def handle_register(message):
         return
     print(f"[gateway] Subscribing to npub: {npub[:20]}...")
 
-    if relay_pool:
+    try:
         pub_hex = npub2hex(npub)
+    except ValueError as e:
+        logger.warning(f"register: invalid npub {npub[:20]}...: {e}")
+        return
+
+    if relay_pool:
         # Subscribe to this npub's DMs
         for ws in list(relay_pool._conns.values()):
             await ws.send_str(json.dumps([
@@ -505,41 +510,44 @@ async def relay_event(event: dict):
 
     # Only handle NIP-17 Gift Wrap
     if kind == 1059:
-        try:
-            # Try to decrypt with all managed nsec
-            keys_data = load_keys()
-            for key in keys_data.get("keys", []):
+        # Try to decrypt with all managed nsec
+        keys_data = load_keys()
+        for key in keys_data.get("keys", []):
+            try:
                 my_nsec = key["nsec"]
                 my_priv = nsec2hex(my_nsec)
+                rumor, real_sender = nip17_unwrap(event, my_priv)
+                content = rumor.get("content", "")
 
-                try:
-                    rumor, real_sender = nip17_unwrap(event, my_priv)
-                    content = rumor.get("content", "")
+                print(f"[gateway] DM from {real_sender[:20]}... to {key['npub'][:20]}...")
 
-                    print(f"[gateway] DM from {real_sender[:20]}... to {key['npub'][:20]}...")
-
-                    # Forward to Broker
-                    await ws_to_broker({
-                        "type": "dm_received",
-                        "from_npub": to_npub(real_sender),
-                        "to_npub": key["npub"],
-                        "content": content
-                    })
-                    return  # Only forward to one matching recipient
-                except Exception:
-                    continue  # Try next nsec
-
-        except Exception as e:
-            print(f"[gateway] Error processing gift wrap: {e}")
+                # Forward to Broker
+                await ws_to_broker({
+                    "type": "dm_received",
+                    "from_npub": to_npub(real_sender),
+                    "to_npub": key["npub"],
+                    "content": content
+                })
+                return  # Only forward to one matching recipient
+            except Exception:
+                continue  # Try next nsec
 
 
 async def handle_send_dm(data: dict):
     """处理发送DM请求"""
-    to_npub = data["to_npub"]
+    dest_npub = data["to_npub"]
     content = data["content"]
     from_npub = data["from_npub"]
 
-    print(f"[gateway] Send DM to {to_npub[:20]}... from {from_npub[:20]}...")
+    print(f"[gateway] Send DM to {dest_npub[:20]}... from {from_npub[:20]}...")
+
+    # 验证目标npub
+    try:
+        to_pub = npub2hex(dest_npub)
+    except ValueError as e:
+        print(f"[gateway] Error: invalid to_npub {dest_npub[:20]}...: {e}")
+        await ws_to_broker({"type": "dm_sent", "ok": False, "error": f"invalid to_npub: {e}"})
+        return
 
     # 获取发送方的nsec
     from_nsec = get_nsec_by_npub(from_npub)
@@ -548,9 +556,13 @@ async def handle_send_dm(data: dict):
         await ws_to_broker({"type": "dm_sent", "ok": False})
         return
 
-    from_priv = nsec2hex(from_nsec)
+    try:
+        from_priv = nsec2hex(from_nsec)
+    except ValueError as e:
+        print(f"[gateway] Error: corrupted nsec for {from_npub[:20]}...: {e}")
+        await ws_to_broker({"type": "dm_sent", "ok": False, "error": f"corrupted nsec: {e}"})
+        return
     from_pub = derive_pub(from_priv)
-    to_pub = npub2hex(to_npub)
 
     try:
         # NIP-17加密
